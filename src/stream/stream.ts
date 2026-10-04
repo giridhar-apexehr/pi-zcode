@@ -93,9 +93,25 @@ function friendlyZCodeError(status: number | undefined, text: string): string {
   return msg || "Unknown API error";
 }
 
-function convertTools(tools?: Tool[]): Record<string, unknown>[] | undefined {
+function convertTools(
+  tools: Tool[] | undefined,
+  isStartPlan: boolean,
+): Record<string, unknown>[] | undefined {
   if (!tools || tools.length === 0) {
     return undefined;
+  }
+  if (!isStartPlan) {
+    // The coding/paas endpoint speaks the OpenAI tool schema. Sending Anthropic's
+    // {name, description, input_schema} is rejected with
+    // 1214 "tools[0].type:type cannot be empty" on every tool-bearing request.
+    return tools.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
   }
   return tools.map((tool) => ({
     name: tool.name,
@@ -105,6 +121,88 @@ function convertTools(tools?: Tool[]): Record<string, unknown>[] | undefined {
 }
 
 function convertMessages(context: Context, isStartPlan = false): Record<string, unknown>[] {
+  return isStartPlan ? convertMessagesAnthropic(context) : convertMessagesOpenAI(context);
+}
+
+/**
+ * Wire format for the Individual Plan endpoint (`/api/coding/paas/v4/chat/completions`),
+ * which is OpenAI-shaped: tool calls live on `assistant.tool_calls` and results are
+ * standalone `{role:"tool"}` messages. Emitting Anthropic parts (`tool_use`,
+ * `tool_result` inside a user message) is rejected with
+ * 1214 "messages[N].content[M].type type error".
+ */
+function convertMessagesOpenAI(context: Context): Record<string, unknown>[] {
+  const messages: Record<string, unknown>[] = [];
+
+  for (const message of context.messages) {
+    if (message.role === "user") {
+      if (typeof message.content === "string") {
+        messages.push({ role: "user", content: message.content });
+      } else if (Array.isArray(message.content)) {
+        const parts: Record<string, unknown>[] = [];
+        for (const part of message.content) {
+          if (part.type === "text") {
+            parts.push({ type: "text", text: part.text });
+          } else if (part.type === "image") {
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:${part.mimeType};base64,${part.data}` },
+            });
+          }
+        }
+        messages.push({ role: "user", content: parts });
+      }
+    } else if (message.role === "assistant") {
+      let text = "";
+      const toolCalls: Record<string, unknown>[] = [];
+      if (typeof message.content === "string") {
+        text = message.content;
+      } else if (Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (part.type === "text" && part.text) {
+            text += part.text;
+          } else if (part.type === "toolCall") {
+            toolCalls.push({
+              id: part.id,
+              type: "function",
+              function: {
+                name: part.name,
+                arguments: JSON.stringify(part.arguments ?? {}),
+              },
+            });
+          }
+        }
+      }
+      // `content` must stay a string here; a tool-call turn carries it alongside tool_calls.
+      messages.push({
+        role: "assistant",
+        content: text,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      });
+    } else if (message.role === "toolResult") {
+      let contentStr = "";
+      if (typeof message.content === "string") {
+        contentStr = message.content;
+      } else if (Array.isArray(message.content)) {
+        contentStr = message.content
+          .filter((p) => p.type === "text")
+          .map((p) => (p as TextContent).text)
+          .join("\n");
+      }
+      messages.push({
+        role: "tool",
+        tool_call_id: message.toolCallId,
+        content: contentStr,
+      });
+    }
+  }
+
+  return messages;
+}
+
+function convertMessagesAnthropic(context: Context): Record<string, unknown>[] {
+  // Only ever used for Start Plan, where prompt caching markers are wanted.
+  const cacheControl = { cache_control: { type: "ephemeral" } };
   const messages: Record<string, unknown>[] = [];
 
   for (const message of context.messages) {
@@ -113,7 +211,7 @@ function convertMessages(context: Context, isStartPlan = false): Record<string, 
         messages.push({
           role: "user",
           content: message.content,
-          ...(isStartPlan ? { cache_control: { type: "ephemeral" } } : {}),
+          ...cacheControl,
         });
       } else if (Array.isArray(message.content)) {
         const parts: Record<string, unknown>[] = [];
@@ -122,7 +220,7 @@ function convertMessages(context: Context, isStartPlan = false): Record<string, 
             parts.push({
               type: "text",
               text: part.text,
-              ...(isStartPlan ? { cache_control: { type: "ephemeral" } } : {}),
+              ...cacheControl,
             });
           } else if (part.type === "image") {
             parts.push({
@@ -261,7 +359,7 @@ function buildRequestBody({
   if (plan === ZCodePlan.START_PLAN) {
     const system = buildZCodeStartPlanSystem(context.systemPrompt, model.id);
     const messages = convertMessages(context, true);
-    const tools = convertTools(context.tools);
+    const tools = convertTools(context.tools, true);
 
     const body: Record<string, unknown> = {
       model: model.id,
@@ -294,7 +392,7 @@ function buildRequestBody({
     temperature: options?.temperature ?? 0.7,
   };
 
-  const tools = convertTools(context.tools);
+  const tools = convertTools(context.tools, false);
   if (tools) body.tools = tools;
   if (model.reasoning && options?.reasoning) {
     body.reasoning_effort = model.thinkingLevelMap?.[options.reasoning] || "medium";
@@ -326,8 +424,10 @@ function parseErrorEnvelope(raw: string): string | undefined {
     }
     const message = parsed.error?.message ?? parsed.msg;
     const code = parsed.error?.code ?? parsed.code;
-    return [message, code].filter((v) => v !== undefined && v !== null && v !== "").join(" | ") ||
-      undefined;
+    return (
+      [message, code].filter((v) => v !== undefined && v !== null && v !== "").join(" | ") ||
+      undefined
+    );
   } catch {
     return undefined;
   }
