@@ -37,7 +37,8 @@ const { streamZCode } = zcodeStream;
 // that the routing and error-surfacing behaviour is wrong.
 function registerPlan(modelIds: string[], plan: string): void {
   const register = (zcodeStream as Record<string, unknown>).registerBaseProviderModelPlans;
-  if (typeof register === "function") (register as (a: string[], b: string) => void)(modelIds, plan);
+  if (typeof register === "function")
+    (register as (a: string[], b: string) => void)(modelIds, plan);
 }
 
 function clearPlans(): void {
@@ -143,10 +144,14 @@ async function drive(
   }) as typeof globalThis.fetch;
 
   const out: Outcome = { urls, types: [], text: "" };
-  const stream = streamZCode(makeModel(provider, id), context as never, {
-    apiKey: API_KEY,
-    maxRetries: 0,
-  } as never);
+  const stream = streamZCode(
+    makeModel(provider, id),
+    context as never,
+    {
+      apiKey: API_KEY,
+      maxRetries: 0,
+    } as never,
+  );
   for await (const ev of stream) {
     out.types.push(ev.type);
     // `done` carries the finished message; `error` carries the partial one.
@@ -178,9 +183,8 @@ test("base zcode provider sends an Individual Plan model to the coding endpoint"
 });
 
 test("explicit zcode-individual-plan provider uses the same coding endpoint", async () => {
-  const out = await drive(
-    "zcode-individual-plan",
-    () => fakeResponse(SSE_REPLY, 200, "text/event-stream"),
+  const out = await drive("zcode-individual-plan", () =>
+    fakeResponse(SSE_REPLY, 200, "text/event-stream"),
   );
   assert.equal(out.text, "PONG");
   assert.match(out.urls[0], /\/api\/coding\/paas\/v4\/chat\/completions$/);
@@ -189,10 +193,8 @@ test("explicit zcode-individual-plan provider uses the same coding endpoint", as
 test("a 200 carrying a JSON error envelope is reported, not silently empty", async () => {
   // Route onto the Individual Plan endpoint so no CAPTCHA solver is involved.
   registerPlan(["glm-5.3-flash"], "individual-plan");
-  const out = await drive(
-    "zcode",
-    () =>
-      fakeResponse('{"code":1005,"msg":"exceed quota limit","logid":"abc"}', 200, "application/json"),
+  const out = await drive("zcode", () =>
+    fakeResponse('{"code":1005,"msg":"exceed quota limit","logid":"abc"}', 200, "application/json"),
   );
   assert.equal(out.types.includes("done"), false, "must not report a successful empty turn");
   assert.ok(out.error, "must surface an error");
@@ -202,7 +204,9 @@ test("a 200 carrying a JSON error envelope is reported, not silently empty", asy
 test("an SSE stream that never yields a delta is reported, not silently empty", async () => {
   // Route onto the Individual Plan endpoint so no CAPTCHA solver is involved.
   registerPlan(["glm-5.3-flash"], "individual-plan");
-  const out = await drive("zcode", () => fakeResponse(": keep-alive\n\n", 200, "text/event-stream"));
+  const out = await drive("zcode", () =>
+    fakeResponse(": keep-alive\n\n", 200, "text/event-stream"),
+  );
   assert.equal(out.types.includes("done"), false, "must not report a successful empty turn");
   assert.match(out.error ?? "", /no content/i);
 });
@@ -216,4 +220,112 @@ test("a model id granted by the Individual Plan routes there from the base provi
     "glm-4.5",
   );
   assert.match(out.urls[0], /\/api\/coding\/paas\/v4\/chat\/completions$/);
+});
+/**
+ * Individual Plan is the OpenAI-shaped `/api/coding/paas/v4/chat/completions`, so the
+ * request body must be OpenAI-shaped too. Emitting Anthropic parts is rejected with
+ * 1214 "messages[N].content[M].type type error" (or "tools[0].type:type cannot be
+ * empty"), which is what a real conversation with any tool call runs into.
+ */
+test("Individual Plan sends OpenAI-shaped tools, not Anthropic input_schema", async () => {
+  registerPlan(["glm-5.3"], "individual-plan");
+  let sent: any;
+  globalThis.fetch = (async (_i: unknown, init: any) => {
+    sent = JSON.parse(String(init.body));
+    return fakeResponse(SSE_REPLY, 200, "text/event-stream");
+  }) as typeof globalThis.fetch;
+
+  const stream = streamZCode(
+    makeModel("zcode", "glm-5.3"),
+    {
+      ...context,
+      tools: [
+        {
+          name: "read",
+          description: "Read a file",
+          parameters: { type: "object", properties: { path: { type: "string" } } },
+        },
+      ],
+    } as never,
+    { apiKey: API_KEY, maxRetries: 0 } as never,
+  );
+  for await (const _ev of stream) {
+    // drain
+  }
+
+  assert.ok(sent, "a request must have been sent");
+  assert.equal(sent.tools[0].type, "function");
+  assert.equal(sent.tools[0].function.name, "read");
+  assert.deepEqual(sent.tools[0].function.parameters, {
+    type: "object",
+    properties: { path: { type: "string" } },
+  });
+  assert.equal(sent.tools[0].input_schema, undefined, "must not send Anthropic input_schema");
+});
+
+test("Individual Plan sends OpenAI-shaped tool calls and tool results", async () => {
+  registerPlan(["glm-5.3"], "individual-plan");
+  let sent: any;
+  globalThis.fetch = (async (_i: unknown, init: any) => {
+    sent = JSON.parse(String(init.body));
+    return fakeResponse(SSE_REPLY, 200, "text/event-stream");
+  }) as typeof globalThis.fetch;
+
+  const withHistory = {
+    systemPrompt: "You are a helpful assistant.",
+    messages: [
+      { role: "user", content: [{ type: "text", text: "Read foo.txt" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Let me read it." },
+          { type: "toolCall", id: "call_1", name: "read", arguments: { path: "foo.txt" } },
+        ],
+      },
+      { role: "toolResult", toolCallId: "call_1", content: "hello from the file" },
+      { role: "user", content: "Summarise it in 3 words." },
+    ],
+  };
+
+  const stream = streamZCode(
+    makeModel("zcode", "glm-5.3"),
+    withHistory as never,
+    {
+      apiKey: API_KEY,
+      maxRetries: 0,
+    } as never,
+  );
+  for await (const _ev of stream) {
+    // drain
+  }
+
+  const msgs = sent.messages;
+  assert.equal(msgs[0].role, "user");
+  assert.equal(msgs[0].content[0].type, "text");
+
+  // assistant turn: plain string content plus tool_calls
+  assert.equal(msgs[1].role, "assistant");
+  assert.equal(msgs[1].content, "Let me read it.");
+  assert.equal(msgs[1].tool_calls[0].type, "function");
+  assert.equal(msgs[1].tool_calls[0].id, "call_1");
+  assert.equal(msgs[1].tool_calls[0].function.name, "read");
+  assert.deepEqual(JSON.parse(msgs[1].tool_calls[0].function.arguments), { path: "foo.txt" });
+  assert.equal(typeof msgs[1].content, "string", "assistant content must be a plain string");
+
+  // tool result: standalone role:"tool" message, not a user part array
+  assert.equal(msgs[2].role, "tool");
+  assert.equal(msgs[2].tool_call_id, "call_1");
+  assert.equal(msgs[2].content, "hello from the file");
+
+  // no part anywhere may use an Anthropic-only type
+  for (const m of msgs) {
+    if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        assert.ok(
+          p.type === "text" || p.type === "image_url",
+          `unexpected part type ${JSON.stringify(p.type)} in message role=${m.role}`,
+        );
+      }
+    }
+  }
 });
