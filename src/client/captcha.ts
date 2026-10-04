@@ -87,7 +87,12 @@ export async function solveCaptchaHeadless(
     region: config.region,
     prefix: config.prefix,
     timeoutMs,
-    reuseWindow: true,
+    // Window reuse saves ~48% CPU per solve but keeps a pooled happy-dom
+    // window (with live SDK timers/XHRs) parked for 120s after the last
+    // solve — those handles pin the process, so `pi -p` and scripted runs
+    // never exit. Reuse is opt-in (CAPTCHA_WINDOW_REUSE=1) for long-lived
+    // interactive sessions; everything else destroys the DOM per solve.
+    reuseWindow: process.env.CAPTCHA_WINDOW_REUSE === "1",
   });
 
   return {

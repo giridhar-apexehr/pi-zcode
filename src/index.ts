@@ -48,6 +48,17 @@ function emitCommandOutput(
 
 let activeExtensionAPI: ExtensionAPI | undefined = undefined;
 
+// Last error from a swallowed failure path (startup / session_start / login
+// plan detection). Surfaced by /zcode.doctor — silent registration failures
+// otherwise look identical to "no active plan".
+let lastRegistrationError: { stage: string; message: string; at: string } | undefined = undefined;
+
+function reportZcodeError(stage: string, error: unknown): void {
+  const message = error instanceof Error ? `${error.message}` : String(error);
+  lastRegistrationError = { stage, message, at: new Date().toISOString() };
+  console.error(`[pi-zcode] ${stage} failed: ${message}`);
+}
+
 export async function detectAndRegisterPlans(
   pi: ExtensionAPI,
   credentials: ZCodeParsedApiKey,
@@ -129,7 +140,9 @@ export async function detectAndRegisterPlans(
         if (activeExtensionAPI) {
           const parsed = readStoredZCodeCredentials(true);
           if (parsed) {
-            await detectAndRegisterPlans(activeExtensionAPI, parsed).catch(() => undefined);
+            await detectAndRegisterPlans(activeExtensionAPI, parsed).catch((err) =>
+              reportZcodeError("post-login plan detection", err),
+            );
           }
         }
         return creds;
@@ -169,7 +182,9 @@ export default async function initZCodeExtension(pi: ExtensionAPI): Promise<void
         const creds = await loginZCode(callbacks);
         const parsed = readStoredZCodeCredentials(true);
         if (parsed) {
-          await detectAndRegisterPlans(pi, parsed).catch(() => undefined);
+          await detectAndRegisterPlans(pi, parsed).catch((err) =>
+            reportZcodeError("post-login plan detection", err),
+          );
         }
         return creds;
       },
@@ -182,14 +197,18 @@ export default async function initZCodeExtension(pi: ExtensionAPI): Promise<void
   // If already logged in, register plan providers immediately on startup
   const stored = readStoredZCodeCredentials(true);
   if (stored) {
-    await detectAndRegisterPlans(pi, stored).catch(() => undefined);
+    await detectAndRegisterPlans(pi, stored).catch((err) =>
+      reportZcodeError("startup plan detection", err),
+    );
   }
 
   // Refresh plan registration on session start
   pi.on("session_start", async () => {
     const creds = readStoredZCodeCredentials(true);
     if (creds) {
-      await detectAndRegisterPlans(pi, creds).catch(() => undefined);
+      await detectAndRegisterPlans(pi, creds).catch((err) =>
+        reportZcodeError("session-start plan detection", err),
+      );
     }
   });
 
@@ -238,6 +257,14 @@ export default async function initZCodeExtension(pi: ExtensionAPI): Promise<void
         `• latencyMs: ${d.latencyMs !== undefined ? `${d.latencyMs}ms` : "none"}`,
         `• requestId: ${d.requestId || "none"}`,
         `• error: ${d.error ? redactSecrets(d.error) : "none"}`,
+        // Last error from a swallowed failure path (startup / session_start /
+        // login plan detection) — silent registration failures otherwise look
+        // identical to "no active plan".
+        `• lastRegistrationError: ${
+          lastRegistrationError
+            ? `${lastRegistrationError.stage} @ ${lastRegistrationError.at}: ${redactSecrets(lastRegistrationError.message)}`
+            : "none"
+        }`,
         "• transport: native-streamSimple (SSE)",
         "• commands: /login zcode, /zcode.usage, /zcode.doctor",
       ];

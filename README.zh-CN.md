@@ -47,8 +47,15 @@
    或从本地源码安装：
 
    ```bash
+   npm install --omit-dev --legacy-peer-deps   # 必须先装运行依赖（happy-dom、undici）
    pi install /path/to/pi-zcode
    ```
+
+   > 从本地源码安装前必须先执行 `npm install --omit-dev`：缺少
+   > `happy-dom`/`undici` 时 import 链会抛错，而 Pi 会静默跳过整个扩展
+   > （没有 provider、没有模型、也没有任何报错）。**不要**在本地安装
+   > `@earendil-works/*`——Pi 会把它们别名到宿主运行时，本地副本会产生
+   > 版本错位的第二实例。`npm:pi-zcode` 安装方式会自动处理依赖。
 
 2. **登录账号**：
 

@@ -47,8 +47,16 @@
    Or install from local source:
 
    ```bash
+   npm install --omit-dev --legacy-peer-deps   # runtime deps (happy-dom, undici) are required
    pi install /path/to/pi-zcode
    ```
+
+   > Local-source installs must run `npm install --omit-dev` first: without
+   > `happy-dom`/`undici` the import chain throws and Pi silently skips the
+   > whole extension (no provider, no models, no error). Do **not** install
+   > `@earendil-works/*` locally — Pi aliases them to the host runtime, and a
+   > local copy would create a second (version-skewed) instance.
+   > `npm:pi-zcode` installs handle dependencies automatically.
 
 2. **Authenticate with your ZCode account**:
 

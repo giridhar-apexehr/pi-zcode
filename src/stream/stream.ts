@@ -63,6 +63,9 @@ function friendlyZCodeError(status: number | undefined, text: string): string {
   if (/1113|insufficient balance|arrear|no resource package/i.test(msg)) {
     return `Insufficient balance or no active plan for this model. Run /login zcode to refresh.`;
   }
+  if (/1005|exceed quota|quota limit/i.test(msg)) {
+    return `Start Plan quota exceeded for this model (upstream 1005: exceed quota limit) — the model may not be in your plan's entitlement, or the shared quota is temporarily exhausted. Try glm-5.3-flash, or check /zcode.usage.`;
+  }
   if (/1004|1000|invalid api key|token expired|authentication failed/i.test(msg)) {
     return `Authentication failed. Run /login zcode to re-authenticate.`;
   }
@@ -497,6 +500,29 @@ export function streamZCode(
 
       if (!res.body) {
         throw new Error("Empty response body received from API");
+      }
+
+      // Upstream sometimes signals business errors with HTTP 200 + a plain
+      // JSON body (e.g. {"code":1005,"msg":"exceed quota limit"}) instead of
+      // a non-2xx status or an SSE error event. The SSE parser below would
+      // silently read zero events and misreport it as "stream ended without
+      // a stop reason (content-filter cutoff)". Detect and surface it.
+      const responseContentType = res.headers.get("content-type") ?? "";
+      if (/json/i.test(responseContentType) && !/event-stream/i.test(responseContentType)) {
+        const bodyText = await res.text();
+        let errText = bodyText.slice(0, 1000) || "(empty JSON body)";
+        try {
+          const parsed = JSON.parse(bodyText) as { code?: number | string; msg?: string; message?: string };
+          if (parsed && (parsed.code !== undefined || parsed.msg || parsed.message)) {
+            errText = `${parsed.code ?? "unknown"} ${parsed.msg || parsed.message || ""}`.trim();
+          }
+        } catch {
+          // Not JSON after all — surface the raw text.
+        }
+        const friendly = friendlyZCodeError(res.status, errText);
+        setLastError(friendly);
+        setLastLatencyMs(Date.now() - startTime);
+        throw new Error(friendly);
       }
 
       const reader = res.body.getReader();
