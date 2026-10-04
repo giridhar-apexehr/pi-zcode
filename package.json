@@ -22,11 +22,12 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint src index.ts",
-    "lint:fix": "oxlint --fix src index.ts",
+    "lint": "oxlint src index.ts tests",
+    "lint:fix": "oxlint --fix src index.ts tests",
+    "test": "node --experimental-transform-types --import ./tests/ts-resolve.mjs --test tests/*.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "tsc --noEmit && oxlint src index.ts && prettier --check ."
+    "check": "tsc --noEmit && oxlint src index.ts tests && prettier --check ."
   },
   "keywords": [
     "pi-package",

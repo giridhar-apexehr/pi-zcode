@@ -197,12 +197,15 @@ function resolveEndpointForPlan(
     return "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages";
   }
 
-  if (model.baseUrl) {
-    return model.baseUrl.endsWith("/chat/completions")
-      ? model.baseUrl
-      : `${model.baseUrl.replace(/\/+$/, "")}/api/paas/v4/chat/completions`;
+  // A model.baseUrl that already names a full endpoint is honoured as-is.
+  if (model.baseUrl?.endsWith("/chat/completions")) {
+    return model.baseUrl;
   }
 
+  // Individual Plan is billed against the coding subscription, which is served by the
+  // /api/coding/paas path. The generic /api/paas path is pay-as-you-go: a
+  // subscription-only account gets 1113 "insufficient balance" and 1210 "thinking
+  // cannot be disabled" there, while the coding path serves the same model fine.
   const host = resolveBaseHost(auth);
   return `${host}/api/coding/paas/v4/chat/completions`;
 }
@@ -295,6 +298,67 @@ function buildRequestBody({
   }
 
   return body;
+}
+
+/**
+ * Extract a readable message from a ZCode JSON error envelope.
+ * Returns undefined when the payload is not an error envelope (e.g. an SSE body).
+ */
+function parseErrorEnvelope(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      code?: number | string;
+      msg?: string;
+      error?: { code?: number | string; message?: string } | string;
+    };
+    if (typeof parsed.error === "string") {
+      return parsed.error;
+    }
+    if (parsed.error === undefined && parsed.code === undefined) {
+      return undefined;
+    }
+    const message = parsed.error?.message ?? parsed.msg;
+    const code = parsed.error?.code ?? parsed.code;
+    return [message, code].filter((v) => v !== undefined && v !== null && v !== "").join(" | ") ||
+      undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Plan routing for models exposed on the aggregate base `zcode` provider.
+ * `detectAndRegisterPlans` records which plan actually granted each model id, so the
+ * stream never guesses. Without this an account holding only an Individual Plan sends
+ * every base-provider model to the Start Plan proxy, which answers HTTP 200 with an
+ * error envelope and no stream — which reads as an empty, successful turn.
+ */
+const baseProviderModelPlans = new Map<string, ZCodePlan>();
+let activePlans: ZCodePlan[] = [];
+
+/** Record which plans this account actually holds, for routing fallbacks. */
+export function setActivePlans(plans: ZCodePlan[]): void {
+  activePlans = plans;
+}
+
+/** Record which plan granted each model id exposed on the base `zcode` provider. */
+export function registerBaseProviderModelPlans(modelIds: string[], plan: ZCodePlan): void {
+  for (const id of modelIds) {
+    // First plan to claim an id wins; an id granted by both stays ambiguous and
+    // falls back to the default below.
+    if (!baseProviderModelPlans.has(id)) {
+      baseProviderModelPlans.set(id, plan);
+    }
+  }
+}
+
+/** Drop recorded routing, so a plan change (e.g. re-login) takes effect immediately. */
+export function clearBaseProviderModelPlans(): void {
+  baseProviderModelPlans.clear();
 }
 
 function isTransientRetryable(text: string): boolean {
@@ -438,6 +502,7 @@ export function streamZCode(
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let capturedBody = "";
 
       while (true) {
         if (options?.signal?.aborted) {
@@ -449,6 +514,9 @@ export function streamZCode(
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
+        if (capturedBody.length < 4000) {
+          capturedBody += buffer.slice(0, 4000 - capturedBody.length);
+        }
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
@@ -686,6 +754,19 @@ export function streamZCode(
         }
       }
 
+      // A turn that produced no content at all is a failure, not an empty success.
+      // Without this an error envelope carried on a 200, or a stream that never
+      // produced a delta, ends as stopReason="stop" and renders as silence.
+      // Skipped on abort, where empty output is the expected consequence.
+      if (output.content.length === 0 && !options?.signal?.aborted) {
+        const envelope = parseErrorEnvelope(capturedBody);
+        throw new Error(
+          envelope
+            ? friendlyZCodeError(res.status, envelope)
+            : `ZCode returned no content for ${model.id} (HTTP ${res.status}, no stream deltas). Retry, or run /zcode.doctor.`,
+        );
+      }
+
       // Close open blocks
       if (thinkingBlockIndex !== -1) {
         const block = output.content[thinkingBlockIndex] as ThinkingContent;
@@ -751,5 +832,14 @@ function resolvePlanFromModel(model: Model<Api>): ZCodePlan {
   if (model.provider === "zcode-individual-plan" || model.provider === "zcode-individual") {
     return ZCodePlan.INDIVIDUAL_PLAN;
   }
-  return ZCodePlan.START_PLAN;
+  if (model.provider === "zcode-start-plan") {
+    return ZCodePlan.START_PLAN;
+  }
+  // Aggregate base `zcode` provider: route by the plan that actually granted the model.
+  const granted = baseProviderModelPlans.get(model.id);
+  if (granted) {
+    return granted;
+  }
+  // Unregistered id: with a single active plan there is no ambiguity.
+  return activePlans.length === 1 ? activePlans[0] : ZCodePlan.START_PLAN;
 }

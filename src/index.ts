@@ -18,7 +18,13 @@ import {
   PROVIDER_NAMES,
 } from "./models/index.js";
 import { detectAccountPlans } from "./plans/index.js";
-import { ZCODE_API, streamZCode } from "./stream/index.js";
+import {
+  ZCODE_API,
+  clearBaseProviderModelPlans,
+  registerBaseProviderModelPlans,
+  setActivePlans,
+  streamZCode,
+} from "./stream/index.js";
 import { ZCodePlan, ZCodePlanStatus } from "./types/enums.js";
 import type { ZCodeAccountPlans, ZCodeParsedApiKey } from "./types/types.js";
 import { fetchAccountUsage, formatUsageReport, resolveApiKeyFromContext } from "./usage/index.js";
@@ -58,6 +64,9 @@ export async function detectAndRegisterPlans(
   const plans = await runWithDiagnostics(() => detectAccountPlans(credsPayload));
   const catalog = await fetchModelCatalog(credentials.zcodeJwtToken);
 
+  // Re-detected on every login/session start, so drop stale routing first.
+  clearBaseProviderModelPlans();
+
   const registrations: { plan: ZCodePlan; ids: string[] | undefined }[] = [];
 
   if (plans.startPlan.status === ZCodePlanStatus.ACTIVE) {
@@ -66,6 +75,8 @@ export async function detectAndRegisterPlans(
   if (plans.individualPlan.status === ZCodePlanStatus.ACTIVE) {
     registrations.push({ plan: ZCodePlan.INDIVIDUAL_PLAN, ids: undefined });
   }
+
+  setActivePlans(registrations.map((reg) => reg.plan));
 
   const allActiveModels = [];
 
@@ -87,6 +98,11 @@ export async function detectAndRegisterPlans(
 
     const models = buildModelsForPlan(ids, catalog);
     const providerId = providerIdForPlan(reg.plan);
+
+    // The base `zcode` provider aggregates every active plan's models, so record
+    // which plan granted each id. Without it the stream routes base-provider models to
+    // the Start Plan proxy by default, which fails silently for Individual Plan accounts.
+    registerBaseProviderModelPlans(ids, reg.plan);
 
     // Register dedicated provider for this plan (e.g. zcode-start-plan)
     pi.registerProvider(providerId, {
