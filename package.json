@@ -25,6 +25,7 @@
     "lint": "oxlint src index.ts tests",
     "lint:fix": "oxlint --fix src index.ts tests",
     "test": "node --experimental-transform-types --import ./tests/ts-resolve.mjs --test tests/*.test.ts",
+    "test:integration": "node --experimental-transform-types --import ./tests/ts-resolve.mjs --test tests/lifecycle.integration.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "tsc --noEmit && oxlint src index.ts tests && prettier --check ."
@@ -47,12 +48,12 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.80.0",
-    "@earendil-works/pi-coding-agent": ">=0.80.0"
+    "@earendil-works/pi-ai": ">=1.0.2",
+    "@earendil-works/pi-coding-agent": ">=1.0.2"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.0",
-    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-coding-agent": "1.0.2",
     "@types/node": "^26.1.1",
     "oxlint": "^1.78.0",
     "prettier": "^3.8.1",

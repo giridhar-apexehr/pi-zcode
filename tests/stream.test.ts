@@ -261,6 +261,7 @@ test("Individual Plan sends OpenAI-shaped tools, not Anthropic input_schema", as
     properties: { path: { type: "string" } },
   });
   assert.equal(sent.tools[0].input_schema, undefined, "must not send Anthropic input_schema");
+  assert.deepEqual(sent.messages[0], { role: "system", content: context.systemPrompt });
 });
 
 test("Individual Plan sends OpenAI-shaped tool calls and tool results", async () => {
@@ -299,7 +300,8 @@ test("Individual Plan sends OpenAI-shaped tool calls and tool results", async ()
     // drain
   }
 
-  const msgs = sent.messages;
+  assert.deepEqual(sent.messages[0], { role: "system", content: withHistory.systemPrompt });
+  const msgs = sent.messages.slice(1);
   assert.equal(msgs[0].role, "user");
   assert.equal(msgs[0].content[0].type, "text");
 
