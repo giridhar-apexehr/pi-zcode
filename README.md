@@ -91,6 +91,45 @@
 
 ---
 
+## Development verification
+
+`npm ci` installs the pinned Pi 1.0.2 development runtime; the integration test
+runs this local CLI, not an installed Pi or installed copy of this extension.
+Pi AI and Pi Coding Agent 1.0.2+ are required: the provider uses the public
+transcript helpers to resolve current system prompts and tool declarations
+(including tool changes/removals), while retaining legacy Context callers.
+Use Node.js 24.18+ (the test runner uses native TypeScript transformation).
+`npm test` is offline and uses mocked HTTP responses; it verifies serialization
+and routing, **not** real tool execution.
+
+For live lifecycle verification, first authenticate with `/login zcode` in Pi
+and ensure the account can use both `glm-5.3` and `glm-5.3-flash`. Then run:
+
+```bash
+PI_ZCODE_LIVE=1 npm run test:integration
+```
+
+This uses real credentials and network requests and consumes account quota.
+Without `PI_ZCODE_LIVE=1`, both tests explicitly skip. Credentials are read from
+`$PI_CODING_AGENT_DIR/auth.json` (default `~/.pi/agent/auth.json`); optionally set
+`PI_ZCODE_INTEGRATION_AUTH` to another existing auth file. Only its `zcode` entry
+is copied into a private temporary agent directory. Other settings, extensions,
+project instructions, sessions and endpoint overrides are excluded. Credentials
+may refresh in the temporary copy but the original auth file is never modified.
+Raw CLI output/diagnostics are not printed to avoid exposing secrets.
+
+Each model gets a fresh isolated CLI run loading **this checkout's** extension,
+a built-in `read` tool and a fixture with a cryptographically random token absent
+from the prompt. A pass requires matching successful `tool_execution_start/end`
+events, completed transcript messages in `toolCall -> toolResult -> final
+assistant` order, and the exact token in the executed result and final assistant.
+No history is injected and no provider is mocked. An exit code or a text-only
+response alone cannot pass. Each CLI has a 180-second hard timeout and 8 MiB
+output limit; temporary credentials, fixtures and caches are removed in `finally`.
+A skipped run is **not live evidence**; a live pass proves this lifecycle only for
+the tested runtime, account entitlement and models at that time, not every plan
+or model. Provider/network/quota failures fail the test rather than skip it.
+
 ## License
 
 [MIT](LICENSE)

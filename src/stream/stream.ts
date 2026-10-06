@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import {
   calculateCost,
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
@@ -130,6 +132,9 @@ function convertMessages(context: Context, isStartPlan = false): Record<string, 
  */
 function convertMessagesOpenAI(context: Context): Record<string, unknown>[] {
   const messages: Record<string, unknown>[] = [];
+  if (context.systemPrompt) {
+    messages.push({ role: "system", content: context.systemPrompt });
+  }
 
   for (const message of context.messages) {
     if (message.role === "user") {
@@ -476,6 +481,13 @@ export function streamZCode(
   context: Context,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+  // Pi's provider-facing transcript carries prompt/tool state in system messages.
+  // Preserve explicit legacy Context fields (including empty prompt/tool overrides).
+  context = {
+    ...context,
+    systemPrompt: context.systemPrompt ?? getCurrentSystemPrompt(context.messages),
+    tools: context.tools ?? getCurrentTools(context.messages),
+  };
   const stream = createAssistantMessageEventStream();
   const plan = resolvePlanFromModel(model);
 
