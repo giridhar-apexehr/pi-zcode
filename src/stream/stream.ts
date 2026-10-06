@@ -624,7 +624,11 @@ export function streamZCode(
         const bodyText = await res.text();
         let errText = bodyText.slice(0, 1000) || "(empty JSON body)";
         try {
-          const parsed = JSON.parse(bodyText) as { code?: number | string; msg?: string; message?: string };
+          const parsed = JSON.parse(bodyText) as {
+            code?: number | string;
+            msg?: string;
+            message?: string;
+          };
           if (parsed && (parsed.code !== undefined || parsed.msg || parsed.message)) {
             errText = `${parsed.code ?? "unknown"} ${parsed.msg || parsed.message || ""}`.trim();
           }
